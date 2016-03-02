@@ -5,12 +5,15 @@ import threading
 
 from util import *
 from packet import IncomingPacket
+from keepalive import KeepAlive
 
 class MCConnection:
 
     closed = False
     version = mc_varint(-1)
     state = States.HANDSHAKING
+    username = mc_string("")
+    compression = -1
     def __init__(self, server, conn_info):
         self.server = server
         self.config = server.config
@@ -20,15 +23,26 @@ class MCConnection:
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
 
+        self.keepalive = KeepAlive(self)
+
     def _worker(self):
 
-        while True:
-            try:
+        try:
+            while self.state != States.PLAY:
                 packet = IncomingPacket.from_connection(self)
                 packet.recv()
-            except ProtocolError as e:
-                print(e, file=sys.stderr)
-                break
+
+
+
+            self.keepalive.start()
+
+            while True:
+                packet = IncomingPacket.from_connection(self)
+                packet.recv()
+                self.keepalive.check()
+
+        except ProtocolError as e:
+            print(e, file=sys.stderr)
 
         return self.close()
 

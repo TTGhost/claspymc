@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 
 import json
+import uuid
+import zlib
 from io import BytesIO
+from urllib.parse import quote
 
 from util import *
 
 class IncomingPacket:
 
-    def __init__(self, conn, length):
+    def __init__(self, conn, buffer):
         self.server = conn.server
         self.sock = conn.conn
         self.connection = conn
 
-        self.length = length
-        self.buffer = BytesIO(safe_recv(self.sock, self.length))
+        # self.buffer = BytesIO(safe_recv(self.sock, self.length))
+        self.buffer = buffer
 
     def read(self, length):
         return self.buffer.read(length)
@@ -23,24 +26,44 @@ class IncomingPacket:
 
     @staticmethod
     def from_connection(conn):
-        length = mc_varint.recv(conn.conn)
-        packet_id = mc_varint.recv(conn.conn)
+        packet_length = mc_varint.recv(conn.conn)
 
-        length -= len(packet_id)
+        if conn.compression < 0:
+            packet_id = mc_varint.recv(conn.conn)
+            length = packet_length - len(packet_id)
+            buffer = BytesIO(safe_recv(conn.conn, length))
+
+        else:
+            length = mc_varint.recv(conn.conn)
+            if length < conn.compression:
+                raise ProtocolError("packet too small for compression")
+
+            compress_length = packet_length - len(length)
+            buffer = BytesIO(zlib.decompress(safe_recv(conn.conn, compress_length)))
+            packet_id = mc_varint.read(buffer)
+
         print("packet length {}, id {}".format(length, packet_id))
         print("conn state {}".format(conn.state))
 
         if conn.state == States.HANDSHAKING:
             if packet_id == 0x00:
-                return HandshakePacket(conn, length)
+                return HandshakePacket(conn, buffer)
 
         elif conn.state == States.STATUS:
             if packet_id == 0x00:
-                return RequestPacket(conn, length)
+                return RequestPacket(conn, buffer)
             elif packet_id == 0x01:
-                return PingPacket(conn, length)
+                return PingPacket(conn, buffer)
 
-        return UnknownPacket(conn, length)
+        elif conn.state == States.LOGIN:
+            if packet_id == 0x00:
+                return LoginStart(conn, buffer)
+
+        elif conn.state == States.PLAY:
+            if packet_id == 0x00:
+                return IncomingKeepAlive(conn, buffer)
+
+        return UnknownPacket(conn, buffer)
 
 
 class OutgoingPacket:
@@ -58,14 +81,26 @@ class OutgoingPacket:
         if type(payload) is str:
             payload = mc_string(payload).bytes()
         elif isinstance(payload, mc_type):
-            payload = bytes(payload)
+            payload = payload.bytes()
 
         pid = mc_varint(self.packet_id)
-        length = mc_varint(len(payload) + len(pid))
+        payload = pid.bytes() + payload
+        length = mc_varint(len(payload))
 
-        length.send(self.sock)
-        pid.send(self.sock)
-        safe_send(self.sock, payload)
+        if self.connection.compression < 0:
+            length.send(self.sock)
+            safe_send(self.sock, payload)
+        else:
+            if len(payload) >= self.connection.compression:
+                payload = zlib.compress(payload)
+            else:
+                length = mc_varint(0)
+
+            packet_length = mc_varint(len(payload) + len(length))
+
+            packet_length.send(self.sock)
+            length.send(self.sock)
+            safe_send(self.sock, payload)
 
     def send(self):
         raise NotImplementedError("outgoing packet send() not implemented")
@@ -119,3 +154,65 @@ class PongPacket(OutgoingPacket):
 
     def send(self):
         self._send(self.payload)
+
+class LoginStart(IncomingPacket):
+
+    packet_id = 0
+    def recv(self):
+        print("login packet")
+        self.connection.username = mc_string.read(self)
+
+        compression = SetCompression(self.connection)
+        compression.send()
+
+        res = LoginSuccess(self.connection)
+        res.send()
+
+class LoginSuccess(OutgoingPacket):
+
+    packet_id = 2
+    def send(self):
+        print(self.connection.username)
+        user_name = quote(str(self.connection.username))
+        try:
+            res = cache.get("https://api.mojang.com/users/profiles/minecraft/{}".format(user_name))
+            user_id = json.loads(res)["id"]
+        except:
+            user_id = str(uuid.uuid4())
+
+        payload = mc_string(user_id).bytes()
+        payload += mc_string(user_name).bytes()
+        self._send(payload)
+
+        self.connection.state = States.PLAY
+
+class SetCompression(OutgoingPacket):
+
+    packet_id = 3
+    def __init__(self, conn, threshold=None):
+        super().__init__(conn)
+        if threshold is None:
+            threshold = conn.config.get("compression", -1)
+        self.threshold = threshold
+
+    def send(self):
+        print("compression packet")
+        self._send(mc_varint(self.threshold))
+        self.connection.compression = self.threshold
+
+class IncomingKeepAlive(IncomingPacket):
+
+    packet_id = 0
+    def recv(self):
+        token = int(mc_varint.read(self))
+        self.connection.keepalive.callback(self, token)
+
+class OutgoingKeepAlive(OutgoingPacket):
+
+    packet_id = 0
+    def __init__(self, conn, token):
+        super().__init__(conn)
+        self.id = token
+
+    def send(self):
+        self._send(mc_varint(self.id))

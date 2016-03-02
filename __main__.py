@@ -5,26 +5,22 @@ import json
 import atexit
 import argparse
 
-__version__ = (0, 1, 0)
-__version_info__ = ".".join(map(str, __version__))
-
-APP_NAME = "claspymc"
-APP_AUTHOR = "bell345"
-APP_VERSION = __version_info__
-PYTHON_VERSION = ".".join(map(str, sys.version_info[:3]))
+from version import APP_NAME, APP_VERSION
+from server import MCServer
 
 DEFAULT_CONFIG = {
     'max_connections': 32,
     'timeout': 15,
-    'servers': [
-        {
-            "port": 8080,
-            "ipv6": True
-        }
-    ]
+    "port": 25565,
+    "ipv6": True,
+    "online": False,
+    "compression": 256,
+    "keepalive": {
+        "send_interval": 10,
+        "timeout": 30
+    }
 }
 
-from server import MCServer
 
 servers = []
 def cleanup():
@@ -49,7 +45,7 @@ def main():
         if args.config:
             config.update(json.load(args.config))
 
-        for conf in config.get("servers", []):
+        for conf in config.get("servers", [{}]):
             conf.update(config)
             servers.append(MCServer(conf))
 

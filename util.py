@@ -5,10 +5,16 @@ import struct
 import socket
 from enum import IntEnum
 
+from version import APP_NAME, APP_AUTHOR, APP_VERSION
+from ecache import Cache
+
+cache = Cache((APP_NAME, APP_AUTHOR), "{}/{}".format(APP_NAME, APP_VERSION))
+
 class States(IntEnum):
     HANDSHAKING = 0
     STATUS = 1
     LOGIN = 2
+    PLAY = 3
 
 class ProtocolError(Exception):
     pass
@@ -66,14 +72,6 @@ def safe_send(sock, buf):
 
 
 class mc_type:
-
-    @staticmethod
-    def _safe_recv(sock, buflen):
-        return safe_recv(sock, buflen)
-
-    @staticmethod
-    def _safe_send(sock, buf):
-        return safe_send(sock, buf)
 
     @staticmethod
     def _recv_unpack(fmt):

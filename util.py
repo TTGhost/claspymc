@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import struct
 import socket
+import appdirs
+from nbt import nbt
+from io import BytesIO
 from enum import IntEnum
 
 from version import APP_NAME, APP_AUTHOR, APP_VERSION
 from ecache import Cache
 
 cache = Cache((APP_NAME, APP_AUTHOR), "{}/{}".format(APP_NAME, APP_VERSION))
+
+DATA_DIR = appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
+def data_filename(server, filename):
+    return os.path.join(server.config.get("data_dir", DATA_DIR), filename)
 
 class States(IntEnum):
     HANDSHAKING = 0
@@ -17,6 +25,9 @@ class States(IntEnum):
     PLAY = 3
 
 class ProtocolError(Exception):
+    pass
+
+class IllegalData(ProtocolError):
     pass
 
 def buf_to_int(buf):
@@ -134,7 +145,7 @@ class mc_varint(mc_type, int):
         else:
             n = buf[0] & 0x7f
             for e in buf[1:]:
-                n = (n << 7) & (e & 0x7f)
+                n = (n << 7) | (e & 0x7f)
 
             return mc_varint(n)
 
@@ -202,7 +213,7 @@ class mc_string(mc_type, str):
         res = self.encode("utf8")
         return bytes(mc_varint(len(res))) + res
 
-class mc_pos(mc_type, tuple):
+class mc_pos(mc_type, list):
 
     @staticmethod
     def read(fp):
@@ -226,12 +237,18 @@ class mc_pos(mc_type, tuple):
 
     @property
     def x(self): return self[0]
+    @x.setter
+    def x(self, v): self[0] = v
 
     @property
     def y(self): return self[1]
+    @y.setter
+    def y(self, v): self[1] = v
 
     @property
     def z(self): return self[2]
+    @z.setter
+    def z(self, v): self[2] = v
 
     def __bytes__(self):
         n = 0
@@ -242,6 +259,18 @@ class mc_pos(mc_type, tuple):
 
         return struct.pack("!Q")
 
+class mc_vec3f(mc_type, tuple):
+    pass
+
+class mc_float(mc_type, float):
+    read = mc_type._read_unpack("!f")
+    recv = mc_type._recv_unpack("!f")
+    __bytes__ = mc_type._bytes_pack("!f")
+
+class mc_double(mc_type, float):  # heh
+    read = mc_type._read_unpack("!d")
+    recv = mc_type._recv_unpack("!d")
+    __bytes__ = mc_type._bytes_pack("!d")
 
 class mc_long(mc_type, int):
     read = mc_type._read_unpack("!q")
@@ -277,4 +306,43 @@ class mc_bool(mc_type, int):
     read = mc_type._read_unpack("!?")
     recv = mc_type._recv_unpack("!?")
     __bytes__ = mc_type._bytes_pack("!?")
+
+class mc_slot(mc_type):
+
+    id = mc_sshort(-1)
+    count = mc_ubyte(0)
+    damage = mc_ushort(0)
+    nbt = None
+    def __init__(self, item_id=mc_sshort(-1), count=mc_ubyte(0), damage=mc_ushort(0), buffer=None):
+        self.id = item_id
+        self.count = count
+        self.damage = damage
+        if buffer:
+            self.nbt = nbt.TAG_Compound(buffer)
+
+    def __bytes__(self):
+        payload = b''
+        payload += mc_sshort(self.id).bytes()
+        if self.id == -1:
+            return payload
+        payload += mc_ubyte(self.count).bytes()
+        payload += mc_ushort(0).bytes()
+        if not self.nbt:
+            payload += b'\x00'
+            return payload
+        else:
+            payload += b'\x01'
+            buf = BytesIO()
+            self.nbt._render_buffer(buf)
+            buf.seek(0)
+            payload += buf.read()
+            return payload
+
+class mc_chunk_section(mc_type):
+
+    def __init__(self, nbt_section):
+        self.nbt = nbt_section
+
+    def __bytes__(self):
+        pass
 

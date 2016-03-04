@@ -4,7 +4,7 @@ import sys
 import threading
 
 from util import *
-from packet import IncomingPacket
+from packet import IncomingPacket, JoinGame, Disconnect
 from keepalive import KeepAlive
 
 class MCConnection:
@@ -12,7 +12,7 @@ class MCConnection:
     closed = False
     version = mc_varint(-1)
     state = States.HANDSHAKING
-    username = mc_string("")
+    player = None
     compression = -1
     def __init__(self, server, conn_info):
         self.server = server
@@ -25,6 +25,13 @@ class MCConnection:
 
         self.keepalive = KeepAlive(self)
 
+    def assign_player(self, player):
+        self.player = player
+        self.server.players.append(player)
+
+        packet = JoinGame(self, player)
+        packet.send()
+
     def _worker(self):
 
         try:
@@ -32,14 +39,17 @@ class MCConnection:
                 packet = IncomingPacket.from_connection(self)
                 packet.recv()
 
-
-
             self.keepalive.start()
 
             while True:
                 packet = IncomingPacket.from_connection(self)
                 packet.recv()
                 self.keepalive.check()
+
+        except IllegalData as e:
+            print(e, file=sys.stderr)
+            packet = Disconnect(self, str(e))
+            packet.send()
 
         except ProtocolError as e:
             print(e, file=sys.stderr)
@@ -50,6 +60,7 @@ class MCConnection:
         if not self.closed:
             self.closed = True
             self.server.connections = [s for s in self.server.connections if s]
+            self.server.players = [p for p in self.server.players if p]
             print("term <{}:{}>: ({} left)".format(self.addr[0], self.addr[1], len(self.server.connections)))
             self.conn.close()
 

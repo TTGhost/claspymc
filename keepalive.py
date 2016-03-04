@@ -33,13 +33,9 @@ class KeepAlive:
         self.thread = threading.Thread(target=self._worker)
 
     def callback(self, token):
-        i = -1
-        for i, beat in enumerate(self.heartbeats):
+        for beat in self.heartbeats:
             if beat.id == token:
-                break
-
-        if i != -1:
-            self.heartbeats.remove(i)
+                self.heartbeats.remove(beat)
 
     def check(self):
         for beat in self.heartbeats:

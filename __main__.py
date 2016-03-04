@@ -5,6 +5,8 @@ import json
 import atexit
 import argparse
 
+# TODO: complete Chunk Data packet
+
 from version import APP_NAME, APP_VERSION
 from server import MCServer
 
@@ -14,10 +16,13 @@ DEFAULT_CONFIG = {
     "port": 25565,
     "ipv6": True,
     "online": False,
-    "compression": 256,
+    "compression": 2,
     "keepalive": {
         "send_interval": 10,
         "timeout": 30
+    },
+    "players": {
+        "max": 10
     }
 }
 

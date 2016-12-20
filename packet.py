@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 
 import json
-import uuid
 import zlib
 import numpy as np
+import random
+
 from io import BytesIO
-from urllib.request import urlopen
-from urllib.parse import quote
 
 from util import *
-from player import Player
 
 class IncomingPacket:
+
+    PLAY_PACKET_MAP = {}
 
     def __init__(self, conn, buffer):
         self.server = conn.server
         self.sock = conn.sock
         self.connection = conn
         self.config = conn.config
+        self.player = conn.player
 
         # self.buffer = BytesIO(safe_recv(self.sock, self.length))
         self.buffer = buffer
 
-    def read(self, length):
+    def read(self, length=None):
         return self.buffer.read(length)
 
     def recv(self):
@@ -66,12 +67,9 @@ class IncomingPacket:
                 return LoginStart(conn, buffer)
 
         elif conn.state == States.PLAY:
-            if packet_id == 0x0B:
-                return IncomingKeepAlive(conn, buffer)
-            elif packet_id == 0x04:
-                return ClientSettings(conn, buffer)
-            elif packet_id == 0x09:
-                return IncomingPluginMessage(conn, buffer)
+            cls = IncomingPacket.PLAY_PACKET_MAP.get(packet_id, None)
+            if cls is not None and type(cls) == type:
+                return cls(conn, buffer)
 
         return UnknownPacket(conn, buffer)
 
@@ -83,11 +81,10 @@ class OutgoingPacket:
         self.server = conn.server
         self.sock = conn.sock
         self.connection = conn
+        self.config = conn.config
+        self.player = conn.player
 
     def _send(self, payload):
-        if self.packet_id == -1:
-            raise NotImplementedError("packet id needs to be specified")
-
         if type(payload) is str:
             payload = mc_string(payload).bytes()
         elif isinstance(payload, mc_type):
@@ -124,7 +121,8 @@ class OutgoingPacket:
 class UnknownPacket(IncomingPacket):
 
     def recv(self):
-        raise ProtocolError("unknown packet")
+        # raise ProtocolError("unknown packet")
+        print("UNHANDLED")
 
 class HandshakePacket(IncomingPacket):
 
@@ -178,23 +176,14 @@ class LoginStart(IncomingPacket):
         print("login packet")
         username = mc_string.read(self)
 
-        player = Player(self.connection, username)
-        self.connection.assign_player(player)
+        self.connection.assign_player(username)
 
         if self.config.get("online", False):
             res = EncryptionRequest(self.connection)
             res.send()
 
         else:
-            compression = SetCompression(self.connection)
-            compression.send()
-
-            res = LoginSuccess(self.connection)
-            res.send()
-
-            self.connection.state = States.PLAY
-            res = JoinGame(self.connection, player)
-            res.send()
+            self.connection.join_game()
 
 class EncryptionRequest(OutgoingPacket):
 
@@ -228,11 +217,7 @@ class EncryptionResponse(IncomingPacket):
         login_hash = self.connection.crypto.generate_login_hash(shared_secret)
         self.connection.player.verify(login_hash)
 
-        res = SetCompression(self.connection)
-        res.send()
-
-        res = LoginSuccess(self.connection)
-        res.send()
+        self.connection.join_game()
 
 class LoginSuccess(OutgoingPacket):
 
@@ -263,9 +248,6 @@ class IncomingKeepAlive(IncomingPacket):
         token = int(mc_varint.read(self))
         self.connection.keepalive.callback(token)
 
-        res = OutgoingKeepAlive(self.connection, token)
-        res.send()
-
 class OutgoingKeepAlive(OutgoingPacket):
 
     packet_id = 0x1F
@@ -279,44 +261,44 @@ class OutgoingKeepAlive(OutgoingPacket):
 class JoinGame(OutgoingPacket):
 
     packet_id = 0x23
-    def __init__(self, conn, player):
-        super().__init__(conn)
-        self.player = player
-
     def send(self):
         print("join packet")
         payload = b''
-        payload += bytes(self.player.entity.entity_id)
-        payload += bytes(self.player.gamemode)
-        payload += bytes(self.player.dimension)
-        payload += bytes(self.player.difficulty)
-        payload += bytes(mc_ubyte(self.player.connection.server.config.get("players", {}).get("max", 10)))
+        payload += mc_int(self.player.entity.entity_id).bytes()
+        payload += mc_ubyte(self.player.gamemode).bytes()
+        payload += mc_sbyte(self.player.dimension).bytes()
+        payload += mc_ubyte(self.player.difficulty).bytes()
+        payload += mc_ubyte(self.config.get("players", {}).get("max", 10)).bytes()
         payload += mc_string("default").bytes()
-        payload += b'\x00'
-        # payload = b'\x23\x00\x00\x00\xfc\x00\x00\x01\x14\x07\x64\x65\x66\x61\x75\x6c\x74\x00'
+        payload += mc_bool(False).bytes()
         self._send(payload)
-        # safe_send(self.sock, b'\x13\x00\x23\x00\x00\x00\xfc\x00\x00\x01\x14\x07\x64\x65\x66\x61\x75\x6c\x74\x00')
+
+class ClientStatus(IncomingPacket):
+
+    RESPAWN = 0
+    REQUEST_STATS = 1
+    OPEN_INVENTORY = 2
+
+    packet_id = 0x03
+    def recv(self):
+        action_id = mc_varint.read(self)
 
 class ClientSettings(IncomingPacket):
 
     packet_id = 0x04
     def recv(self):
-        locale = mc_string.read(self)
-        view_dist = mc_ubyte.read(self)
-        chat_mode = mc_varint.read(self)
-        chat_colours = mc_bool.read(self)
-        skin_parts = mc_ubyte.read(self)
-        main_hand = mc_varint.read(self)
+        self.player.locale = mc_string.read(self)
+        self.player.view_distance = mc_ubyte.read(self)
+        self.player.chat_mode = mc_varint.read(self)
+        self.player.chat_colours = mc_bool.read(self)
+        self.player.skin_parts = mc_ubyte.read(self)
+        self.player.right_handed = bool(mc_varint.read(self))
 
 class IncomingPluginMessage(IncomingPacket):
 
     packet_id = 0x09
     def recv(self):
         channel = mc_string.read(self)
-        if channel == "MC|Brand":
-            client_brand = mc_string.read(self)
-            packet = OutgoingPluginMessage(self.connection, "MC|Brand", mc_string("claspymc").bytes())
-            packet.send()
 
 class OutgoingPluginMessage(OutgoingPacket):
 
@@ -342,6 +324,28 @@ class Disconnect(OutgoingPacket):
     def send(self):
         self._send(self.reason.bytes())
         self.connection.close()
+
+class ServerDifficulty(OutgoingPacket):
+
+    packet_id = 0x0D
+    def send(self):
+        self._send(mc_ubyte(self.player.difficulty).bytes())
+
+class SpawnPosition(OutgoingPacket):
+
+    packet_id = 0x43
+    def send(self):
+        self._send(mc_pos(self.player.spawn_position).bytes())
+
+class OutgoingPlayerAbilities(OutgoingPacket):
+
+    packet_id = 0x2B
+    def send(self):
+        payload = b''
+        payload += mc_sbyte(self.player.abilities).bytes()
+        payload += mc_float(self.player.flying_speed).bytes()
+        payload += mc_float(self.player.fov_modifier).bytes()
+        self._send(payload)
 
 class BasicPlayerUpdate(IncomingPacket):
 
@@ -373,7 +377,7 @@ class PlayerLookUpdate(IncomingPacket):
         self.connection.player.pitch = mc_float.read(self)
         self.connection.player.on_ground = mc_bool.read(self)
 
-class PlayerPositionLookUpdate(IncomingPacket):
+class IncomingPlayerPositionLook(IncomingPacket):
 
     packet_id = 0x0D
     def recv(self):
@@ -381,7 +385,7 @@ class PlayerPositionLookUpdate(IncomingPacket):
         pos[0] = mc_double.read(self)
         pos[1] = mc_double.read(self)
         pos[2] = mc_double.read(self)
-        if isinstance(self.connection.player.position, np.array):
+        if isinstance(self.connection.player.position, np.ndarray):
             diff = np.linalg.norm(pos - self.connection.player.position)
             if diff > 100:
                 raise IllegalData("You moved too quickly!")
@@ -390,6 +394,73 @@ class PlayerPositionLookUpdate(IncomingPacket):
         self.connection.player.yaw = mc_float.read(self)
         self.connection.player.pitch = mc_float.read(self)
         self.connection.player.on_ground = mc_bool.read(self)
+
+class OutgoingPlayerPositionLook(OutgoingPacket):
+
+    X_RELATIVE = 0x01
+    Y_RELATIVE = 0x02
+    Z_RELATIVE = 0x04
+    PITCH_RELATIVE = 0x08
+    YAW_RELATIVE = 0x10
+
+    packet_id = 0x2E
+    def __init__(self, conn, pos=None, yaw=None, pitch=None, flags=0):
+        super().__init__(conn)
+        self.pos = pos
+        self.yaw = yaw
+        self.pitch = pitch
+        self.flags = flags
+        if self.flags & (self.X_RELATIVE | self.Y_RELATIVE | self.Z_RELATIVE)\
+                and self.pos is None:
+            raise ValueError("If position update is relative, new pos must be specified.")
+
+        if self.flags & self.PITCH_RELATIVE and self.pitch is None:
+            raise ValueError("If pitch is relative, new pitch must be specified.")
+
+        if self.flags & self.YAW_RELATIVE and self.yaw is None:
+            raise ValueError("if yaw is relative, new yaw must be specified.")
+
+    def send(self):
+        payload = b''
+        last_pos = mc_vec3f(self.player.position)
+        last_pitch = self.player.pitch
+        last_yaw = self.player.yaw
+
+        pos = mc_vec3f(self.pos if self.pos is not None else last_pos)
+        pitch = self.pitch if self.pitch is not None else last_pitch
+        yaw = self.yaw if self.pitch is not None else last_yaw
+
+        if self.flags & self.X_RELATIVE:
+            pos.x -= last_pos.x
+        if self.flags & self.Y_RELATIVE:
+            pos.y -= last_pos.y
+        if self.flags & self.Z_RELATIVE:
+            pos.z -= last_pos.z
+        if self.flags & self.PITCH_RELATIVE:
+            pitch -= last_pitch
+        if self.flags & self.YAW_RELATIVE:
+            yaw -= last_yaw
+
+        payload += mc_double(pos.x).bytes()
+        payload += mc_double(pos.y).bytes()
+        payload += mc_double(pos.z).bytes()
+        payload += mc_float(yaw).bytes()
+        payload += mc_float(pitch).bytes()
+        payload += mc_sbyte(self.flags).bytes()
+
+        teleport_id = random.randint(1, 2**24-1)
+        self.player.teleport_ids.append(teleport_id)
+        payload += mc_varint(teleport_id).bytes()
+
+        self._send(payload)
+
+class TeleportConfirm(IncomingPacket):
+
+    packet_id = 0x00
+    def recv(self):
+        teleport_id = int(mc_varint.read(self))
+        if teleport_id in self.player.teleport_ids:
+            self.player.teleport_ids.remove(int(teleport_id))
 
 class ChunkData(OutgoingPacket):
 
@@ -405,3 +476,36 @@ class ChunkData(OutgoingPacket):
         n = 1 << (len(self.chunk["Level"]["Sections"]) + 1)
         payload += mc_varint(~n & (n - 1)).bytes()
         sections = b''
+
+IncomingPacket.PLAY_PACKET_MAP = {
+    0x00: TeleportConfirm,
+    # 0x01: TabComplete,
+    # 0x02: IncomingChatMessage,
+    0x03: ClientStatus,
+    0x04: ClientSettings,
+    # 0x05: ConfirmTransaction,
+    # 0x06: EnchantItem,
+    # 0x07: ClickWindow,
+    # 0x08: CloseWindow,
+    0x09: IncomingPluginMessage,
+    # 0x0A: UseEntity,
+    0x0B: IncomingKeepAlive,
+    # 0x0C: IncomingPlayerPosition,
+    0x0D: IncomingPlayerPositionLook,
+    # 0x0E: IncomingPlayerLook,
+    # 0x0F: PlayerOnGround,
+    # 0x10: IncomingVehicleMove,
+    # 0x11: SteerBoat,
+    # 0x12: IncomingPlayerAbilities,
+    # 0x13: PlayerDigging,
+    # 0x14: EntityAction,
+    # 0x15: PlayerInput,
+    # 0x16: ResourcePackStatus
+    # 0x17: IncomingHeldItemChange,
+    # 0x18: CreativeInventoryAction,
+    # 0x19: UpdateSign,
+    # 0x1A: IncomingAnimation,
+    # 0x1B: SpectatePlayer,
+    # 0x1C: BlockPlacement,
+    # 0x1D: UseItem
+}

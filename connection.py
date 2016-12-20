@@ -4,7 +4,8 @@ import sys
 import threading
 
 from util import *
-from packet import IncomingPacket, JoinGame, Disconnect
+import packet
+from player import Player
 from keepalive import KeepAlive
 from crypto import CryptoState
 
@@ -12,9 +13,6 @@ class MCConnection:
 
     closed = False
     version = mc_varint(-1)
-    state = States.HANDSHAKING
-    player = None
-    compression = -1
     def __init__(self, server, conn_info):
         self.server = server
         self.config = server.config
@@ -26,12 +24,30 @@ class MCConnection:
 
         self.keepalive = KeepAlive(self)
 
+        self.player = None
+        self.compression = -1
+        self.state = States.HANDSHAKING
+
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
 
-    def assign_player(self, player):
-        self.player = player
-        self.server.players.append(player)
+    def assign_player(self, username):
+        self.player = Player(self, username, resolve_uuid=True)
+        self.server.players.append(self.player)
+        self.server.entities.append(self.player.entity)
+
+    def join_game(self):
+
+        packet.SetCompression(self).send()
+        packet.LoginSuccess(self).send()
+
+        self.state = States.PLAY
+        packet.JoinGame(self).send()
+
+        impl_name = mc_string("{}/{}".format(APP_NAME, APP_VERSION)).bytes()
+        packet.OutgoingPluginMessage(self, "MC|Brand", impl_name).send()
+
+        self.player.spawn()
 
     def _worker(self):
 
@@ -40,8 +56,8 @@ class MCConnection:
                 if self.closed:
                     return
 
-                packet = IncomingPacket.from_connection(self)
-                packet.recv()
+                pkt = packet.IncomingPacket.from_connection(self)
+                pkt.recv()
 
             self.keepalive.start()
 
@@ -49,14 +65,14 @@ class MCConnection:
                 if self.closed:
                     return
 
-                packet = IncomingPacket.from_connection(self)
-                packet.recv()
+                pkt = packet.IncomingPacket.from_connection(self)
+                pkt.recv()
                 self.keepalive.check()
 
         except IllegalData as e:
             print(e, file=sys.stderr)
-            packet = Disconnect(self, str(e))
-            packet.send()
+            pkt = packet.Disconnect(self, str(e))
+            pkt.send()
 
         except ProtocolError as e:
             print(e, file=sys.stderr)

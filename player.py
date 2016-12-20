@@ -11,6 +11,7 @@ from urllib.error import URLError, HTTPError
 
 from util import *
 from entity import PlayerEntity
+import packet
 
 __author__ = 'Thomas Bell'
 
@@ -19,13 +20,14 @@ HAS_JOINED_URL = "https://sessionserver.mojang.com/session/minecraft/hasJoined?u
 
 class Player:
 
-    def __init__(self, conn, username):
+    def __init__(self, conn, username, resolve_uuid=False):
         self.connection = conn
+        self.server = conn.server
         self.username = username
         self.config = conn.config
         self.uuid = None
 
-        if not self.config.get("online", False):
+        if not self.config.get("online", False) and resolve_uuid:
             self._resolve_uuid()
 
         self.nbt = nbt.NBTFile()
@@ -34,13 +36,39 @@ class Player:
         if os.path.isfile(self.filename):
             self.nbt.parse_file(self.filename)
 
-        self.gamemode = mc_ubyte(0)
-        self.dimension = mc_sbyte(0)
-        self.difficulty = mc_ubyte(0)
+        self.gamemode = Gamemode.SURVIVAL
+        self.dimension = Dimension.OVERWORLD
+        self.difficulty = self.config.get("difficulty", Difficulty.EASY)
 
         self.on_ground = False
-        self.position = np.array([0, 0, 0])
-        self.yaw = mc_float(0)
+        self.position = np.array([0, 63, 0])
+        self.spawn_position = np.array([0, 63, 0])
+        self.yaw = 0.0
+        self.pitch = 0.0
+
+        self.locale = None
+        self.permission_level = 0
+        self.abilities = 0
+        self.view_distance = 0
+        self.chat_mode = 0
+        self.chat_colours = False
+        self.skin_parts = 0
+        self.right_handed = False
+        self.flying_speed = 0.05
+        self.fov_modifier = 0.10
+
+        self.teleport_ids = []
+        self.is_ready = False
+
+    def spawn(self):
+        packet.ServerDifficulty(self.connection).send()
+        packet.SpawnPosition(self.connection).send()
+        packet.OutgoingPlayerAbilities(self.connection).send()
+        packet.OutgoingPlayerPositionLook(self.connection,
+                                          self.spawn_position,
+                                          self.yaw,
+                                          self.pitch).send()
+
 
     def _resolve_uuid(self):
         user_name = quote(str(self.username))
@@ -53,9 +81,7 @@ class Player:
     def verify(self, login_hash):
         user_name = quote(str(self.username))
         try:
-            print("doing a thing...")
             res = urlopen(HAS_JOINED_URL.format(user_name, login_hash))
-            print("response: {}".format(res))
             self.uuid = uuid.UUID(json.loads(res)["id"])
 
         except HTTPError as e:
@@ -63,7 +89,6 @@ class Player:
                 raise IllegalData("User is not logged in!")
 
             else:
-                print(e)
                 raise
 
     def __bool__(self):

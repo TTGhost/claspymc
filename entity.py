@@ -16,10 +16,10 @@ particle_id = _running_id()
 class Entity:
 
     def __init__(self):
-        self.entity_id = mc_int(next(entity_id))
-        self.flags = mc_ubyte(0)
-        self.air = mc_varint(10)
-        self.name = mc_string("")
+        self.entity_id = next(entity_id)
+        self.flags = 0
+        self.air = 10
+        self.name = ""
         self.name_visible = False
         self.silent = False
 
@@ -33,10 +33,10 @@ class AreaEffectCloud(Entity):
 
     def __init__(self):
         super().__init__()
-        self.radius = mc_float(0)
-        self.colour = mc_varint(0)
+        self.radius = 0
+        self.colour = 0
         self.point = False
-        self.particle_id = mc_varint(next(particle_id))
+        self.particle_id = next(particle_id)
 
 class Arrow(Entity):
 
@@ -48,16 +48,16 @@ class TippedArrow(Arrow):
 
     def __init__(self):
         super().__init__()
-        self.colour = mc_varint(0)
+        self.colour = 0
 
 class Boat(Entity):
 
     def __init__(self):
         super().__init__()
-        self.last_hit_time = mc_varint(0)
-        self.direction = mc_varint(0)
-        self.damage = mc_float(0)
-        self.type = mc_varint(0)
+        self.last_hit_time = 0
+        self.direction = 0
+        self.damage = 0.0
+        self.type = 0
 
 class EnderCrystal(Entity):
 
@@ -83,7 +83,7 @@ class ItemFrame(Hanging):
     def __init__(self):
         super().__init__()
         self.item = mc_slot()
-        self.rotation = mc_varint(0)
+        self.rotation = 0
 
 class Item(Entity):
 
@@ -95,25 +95,25 @@ class Living(Entity):
 
     def __init__(self):
         super().__init__()
-        self.health = mc_float(0)
-        self.potion_colour = mc_varint(0)
+        self.health = 0.0
+        self.potion_colour = 0
         self.potion_ambient = False
-        self.arrows = mc_varint(0)
+        self.arrows = 0
 
 class PlayerEntity(Entity):
 
     def __init__(self):
         super().__init__()
-        self.additional_health = mc_float(0)
-        self.score = mc_varint(0)
-        self.skin_flags = mc_ubyte(0)
-        self.main_hand = mc_ubyte(0)
+        self.additional_health = 0.0
+        self.score = 0
+        self.skin_flags = 0
+        self.main_hand = 0
 
 class ArmorStand(Entity):
 
     def __init__(self):
         super().__init__()
-        self.status = mc_ubyte(0)
+        self.status = 0
         self.head_rot = mc_vec3f((0, 0, 0))
         self.body_rot = mc_vec3f((0, 0, 0))
         self.left_arm_rot = mc_vec3f((0, 0, 0))
@@ -125,7 +125,7 @@ class Insentient(Entity):
 
     def __init__(self):
         super().__init__()
-        self.status = mc_ubyte(0)
+        self.status = 0
 
 class Ambient(Insentient):
     pass
@@ -134,7 +134,7 @@ class Bat(Ambient):
 
     def __init__(self):
         super().__init__()
-        self.hanging = mc_ubyte(0)
+        self.hanging = 0
 
 class Creature(Insentient):
     pass

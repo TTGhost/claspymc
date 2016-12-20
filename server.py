@@ -17,17 +17,24 @@ class MCServer:
         af = socket.AF_INET6 if config.get("ipv6", False) else socket.AF_INET
         self.sock = socket.socket(af, socket.SOCK_STREAM)
         self.connections = []
-        self.thread = threading.Thread(target=self._worker)
-        self.thread.start()
-        print("Started server")
 
         self.players = []
+        self.entities = []
         self.private_key, self.public_key = generate_keys()
 
+        self.thread = threading.Thread(target=self._worker)
+
+    def start(self):
+        self.thread.start()
+
     def _worker(self):
+        host = self.config.get("host", "")
+        port = self.config.get("port", 25565)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((self.config.get("host", ""), self.config.get("port", 80)))
+        self.sock.bind((host, port))
         self.sock.listen(self.config.get("max_connections", 32))
+
+        print("est. <{}:{}>".format(host, port))
 
         while True:
             conn, addr = self.sock.accept()

@@ -37,6 +37,9 @@ class KeepAlive:
             if beat.id == token:
                 self.heartbeats.remove(beat)
 
+        res = OutgoingKeepAlive(self.connection, token)
+        res.send()
+
     def check(self):
         for beat in self.heartbeats:
             if beat.sent and time.time() - beat.sent > self.config.get("timeout", 30):

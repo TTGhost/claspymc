@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "ipv6": True,
     "online": False,
     "compression": 2,
+    "difficulty": 1,
     "keepalive": {
         "send_interval": 10,
         "timeout": 30
@@ -52,7 +53,9 @@ def main():
 
         for conf in config.get("servers", [{}]):
             conf.update(config)
-            servers.append(MCServer(conf))
+            server = MCServer(conf)
+            server.start()
+            servers.append(server)
 
     except (KeyboardInterrupt, SystemExit, Exception) as e:
         print(e, file=sys.stderr)

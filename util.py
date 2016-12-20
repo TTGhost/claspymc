@@ -16,13 +16,55 @@ cache = Cache((APP_NAME, APP_AUTHOR), "{}/{}".format(APP_NAME, APP_VERSION))
 
 DATA_DIR = appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
 def data_filename(server, filename):
-    return os.path.join(server.config.get("data_dir", DATA_DIR), filename)
+    directory = server.config.get("data_dir", DATA_DIR)
+    if not os.path.isdir(directory):
+        os.mkdir(directory)
+
+    return os.path.join(directory, filename)
 
 class States(IntEnum):
     HANDSHAKING = 0
     STATUS = 1
     LOGIN = 2
     PLAY = 3
+
+class Dimension(IntEnum):
+    NETHER = -1
+    OVERWORLD = 0
+    END = 1
+
+class Difficulty(IntEnum):
+    PEACEFUL = 0
+    EASY = 1
+    NORMAL = 2
+    HARD = 3
+
+class Gamemode(IntEnum):
+    SURVIVAL = 0
+    CREATIVE = 1
+    ADVENTURE = 2
+    SPECTATOR = 3
+    HARDCORE = 0x08
+
+class PlayerFlags(IntEnum):
+    INVULNERABLE = 0x01
+    FLYING = 0x02
+    ALLOW_FLYING = 0x04
+    CREATIVE_MODE = 0x08
+
+class ChatMode(IntEnum):
+    ENABLED = 0
+    COMMANDS_ONLY = 1
+    HIDDEN = 2
+
+class DisplayedSkinParts(IntEnum):
+    CAPE = 0x01
+    JACKET = 0x02
+    LEFT_SLEEVE = 0x04
+    RIGHT_SLEEVE = 0x08
+    LEFT_PANT_LEG = 0x10
+    RIGHT_PANT_LEG = 0x20
+    HAT = 0x40
 
 class ProtocolError(Exception):
     pass
@@ -166,7 +208,7 @@ class mc_varnum(mc_type, int):
         x = type(self)(signed_to_unsigned(self, self._width))
         length = len(x)
         buf = bytearray(length)
-        for i,e in enumerate(buf):
+        for i, e in enumerate(buf):
             buf[i] = (x >> (7*i)) & 0x7f
             if i < length-1:
                 buf[i] |= 0x80
@@ -279,10 +321,24 @@ class mc_pos(mc_type, list):
         n |= (self.y & 0xFFF) << 26
         n |= (self.z & 0x3FFFFFF)
 
-        return struct.pack("!Q")
+        return struct.pack("!Q", n)
 
-class mc_vec3f(mc_type, tuple):
-    pass
+class mc_vec3f(mc_type, list):
+
+    @property
+    def x(self): return self[0]
+    @x.setter
+    def x(self, v): self[0] = v
+
+    @property
+    def y(self): return self[1]
+    @y.setter
+    def y(self, v): self[1] = v
+
+    @property
+    def z(self): return self[2]
+    @z.setter
+    def z(self, v): self[2] = v
 
 class mc_float(mc_type, float):
     read = mc_type._read_unpack("!f")
@@ -367,4 +423,3 @@ class mc_chunk_section(mc_type):
 
     def __bytes__(self):
         pass
-

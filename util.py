@@ -30,13 +30,6 @@ class ProtocolError(Exception):
 class IllegalData(ProtocolError):
     pass
 
-def buf_to_int(buf):
-    n = 0
-    for e in buf:
-        n = (n << 8) & e
-
-    return n
-
 def unsigned_to_signed(n, width):
     m = (1 << (width - 1))
     k = m - 1
@@ -44,6 +37,10 @@ def unsigned_to_signed(n, width):
         return (n & k) - m
     else:
         return n & k
+
+def signed_to_unsigned(n, width):
+    m = (1 << width) - 1
+    return n & m
 
 def safe_recv(sock, buflen):
     buf = bytearray()
@@ -57,6 +54,7 @@ def safe_recv(sock, buflen):
                 break
 
             buf += new_data
+
     except (BrokenPipeError, OSError, socket.timeout) as e:
         print(e, file=sys.stderr)
         raise ProtocolError(e)
@@ -79,8 +77,6 @@ def safe_send(sock, buf):
     except (BrokenPipeError, OSError, socket.timeout) as e:
         print(e, file=sys.stderr)
         raise ProtocolError(e)
-
-
 
 class mc_type:
 
@@ -118,61 +114,57 @@ class mc_type:
 
         return __bytes__
 
-    @staticmethod
-    def recv(sock):
-        raise NotImplementedError("type not specified")
-
     def bytes(self):
         return bytes(self)
 
     def send(self, sock):
         safe_send(sock, self.bytes())
 
-class mc_varint(mc_type, int):
+class mc_varnum(mc_type, int):
 
-    @staticmethod
-    def read(fp):
-        buf = fp.read(1)
+    _width = None
 
-        while buf[0] & 0x80 and len(buf) < 32:
-            buf = fp.read(1) + buf
+    @classmethod
+    def from_bytes(cls, buf):
+        if not cls._width:
+            raise NotImplementedError("{}._length not defined".format(cls.__name__))
 
         if len(buf) >= 32:
-            raise ProtocolError("varint too long")
+            raise ProtocolError("{} too long".format(cls.__name__))
 
-        if len(buf) == 1:
-            return mc_varint(buf[0])
-        else:
-            n = buf[0] & 0x7f
-            for e in buf[1:]:
-                n = (n << 7) | (e & 0x7f)
+        n = 0
+        for e in buf[::-1]:
+            n = (n << 7) | (e & 0x7f)
 
-            return mc_varint(n)
+        return cls(unsigned_to_signed(n, cls._width))
 
-    @staticmethod
-    def recv(sock):
+    @classmethod
+    def read(cls, fp):
+        buf = fp.read(1)
+        while buf[0] & 0x80 and len(buf) < 32:
+            nxt = fp.read(1)
+            if not nxt:
+                break
+            buf = nxt + buf
+
+        return cls.from_bytes(buf)
+
+    @classmethod
+    def recv(cls, sock):
         buf = safe_recv(sock, 1)
         while buf[0] & 0x80 and len(buf) < 32:
             buf = safe_recv(sock, 1) + buf
 
-        if len(buf) >= 32:
-            raise ProtocolError("varint too long")
-
-        if len(buf) == 1:
-            return mc_varint(buf[0])
-        else:
-            n = buf[0] & 0x7f
-            for e in buf[1:]:
-                n = (n << 7) & (e & 0x7f)
-
-            return mc_varint(n)
+        return cls.from_bytes(buf)
 
     def __bytes__(self):
-        length = len(self)
+        x = type(self)(signed_to_unsigned(self, self._width))
+        length = len(x)
         buf = bytearray(length)
         for i,e in enumerate(buf):
-            buf[i] = (self >> (7*i)) & 0x7f
-            if i < length-1: buf[i] |= 0x80
+            buf[i] = (x >> (7*i)) & 0x7f
+            if i < length-1:
+                buf[i] |= 0x80
 
         return bytes(buf)
 
@@ -182,6 +174,12 @@ class mc_varint(mc_type, int):
             length += 1
 
         return length
+
+class mc_varint(mc_varnum):
+    _width = 32
+
+class mc_varlong(mc_varnum):
+    _width = 64
 
 class mc_string(mc_type, str):
 

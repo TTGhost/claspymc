@@ -26,7 +26,7 @@ class KeepAlive:
     def __init__(self, conn):
         self.server = conn.server
         self.connection = conn
-        self.sock = conn.conn
+        self.sock = conn.sock
         self.config = conn.config.get("keepalive", {})
         self.heartbeats = []
 
@@ -43,12 +43,16 @@ class KeepAlive:
                 raise ProtocolError("Player timed out")
 
     def _worker(self):
-        while True:
-            if not self.connection or not self.server:
-                break
+        try:
+            while True:
+                if not self.connection or not self.server:
+                    break
 
-            self.send()
-            time.sleep(self.config.get("send_interval", 10))
+                self.send()
+                time.sleep(self.config.get("send_interval", 10))
+
+        finally:
+            self.connection.close()
 
     def send(self):
         heartbeat = Heartbeat(self.connection, randint(0, 127))

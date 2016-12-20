@@ -62,21 +62,26 @@ def safe_recv(sock, buflen):
     if len(buf) < buflen:
         raise ProtocolError("connection closed")
 
-    print(buf)
-
     return buf
 
 def safe_send(sock, buf):
     if type(buf) is str:
         buf = buf.encode("utf8")
 
-    print("send: {}".format(buf))
-
     try:
         sock.sendall(buf)
     except (BrokenPipeError, OSError, socket.timeout) as e:
         print(e, file=sys.stderr)
         raise ProtocolError(e)
+
+def print_hex_dump(contents):
+    for pos in range(0x0000, len(contents), 16):
+        row = contents[pos:pos+16]
+        print("| {:04x} | {: <47} | {: <16} |".format(
+            pos,
+            ' '.join('{:02x}'.format(x) for x in row),
+            ''.join((chr(x) if (0x20 <= x < 0x7f) else '.') for x in row)
+        ))
 
 class mc_type:
 
@@ -210,6 +215,25 @@ class mc_string(mc_type, str):
     def bytes(self):
         res = self.encode("utf8")
         return bytes(mc_varint(len(res))) + res
+
+class mc_bytes(mc_type, bytes):
+
+    @staticmethod
+    def read(fp):
+        length = mc_varint.read(fp)
+        array = fp.read(length)
+
+        return mc_bytes(array)
+
+    @staticmethod
+    def recv(sock):
+        length = mc_varint.recv(sock)
+        array = safe_recv(sock, length)
+
+        return mc_bytes(array)
+
+    def bytes(self):
+        return bytes(mc_varint(len(self))) + bytes(self)
 
 class mc_pos(mc_type, list):
 

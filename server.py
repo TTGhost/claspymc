@@ -4,6 +4,7 @@ import socket
 import threading
 
 from util import *
+from crypto import generate_keys
 from connection import MCConnection
 
 class MCServer:
@@ -21,6 +22,7 @@ class MCServer:
         print("Started server")
 
         self.players = []
+        self.private_key, self.public_key = generate_keys()
 
     def _worker(self):
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

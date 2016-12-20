@@ -5,6 +5,7 @@ import uuid
 import zlib
 import numpy as np
 from io import BytesIO
+from urllib.request import urlopen
 from urllib.parse import quote
 
 from util import *
@@ -14,8 +15,9 @@ class IncomingPacket:
 
     def __init__(self, conn, buffer):
         self.server = conn.server
-        self.sock = conn.conn
+        self.sock = conn.sock
         self.connection = conn
+        self.config = conn.config
 
         # self.buffer = BytesIO(safe_recv(self.sock, self.length))
         self.buffer = buffer
@@ -28,26 +30,26 @@ class IncomingPacket:
 
     @staticmethod
     def from_connection(conn):
-        packet_length = mc_varint.recv(conn.conn)
+        packet_length = mc_varint.recv(conn.sock)
 
         if conn.compression < 0:
-            packet_id = mc_varint.recv(conn.conn)
+            packet_id = mc_varint.recv(conn.sock)
             length = packet_length - len(packet_id)
-            buffer = BytesIO(safe_recv(conn.conn, length))
+            buffer = BytesIO(safe_recv(conn.sock, length))
 
         else:
-            length = mc_varint.recv(conn.conn)
+            length = mc_varint.recv(conn.sock)
             if length < conn.compression:
                 raise ProtocolError("packet too small for compression")
 
             compress_length = packet_length - len(length)
-            buffer = BytesIO(zlib.decompress(safe_recv(conn.conn, compress_length)))
+            buffer = BytesIO(zlib.decompress(safe_recv(conn.sock, compress_length)))
             packet_id = mc_varint.read(buffer)
 
-        print("packet length {}, id {}".format(length, packet_id))
-        print("conn state {}".format(conn.state))
-        print("decompressed packet: {}".format(buffer.read()))
-        buffer.seek(0)
+        if packet_id != IncomingKeepAlive.packet_id or conn.state != States.PLAY:
+            print("RECV PACKET (length={}, id={}, state={})".format(length, packet_id, conn.state))
+            print_hex_dump(buffer.read())
+            buffer.seek(0)
 
         if conn.state == States.HANDSHAKING:
             if packet_id == 0x00:
@@ -79,7 +81,7 @@ class OutgoingPacket:
     packet_id = -1
     def __init__(self, conn):
         self.server = conn.server
-        self.sock = conn.conn
+        self.sock = conn.sock
         self.connection = conn
 
     def _send(self, payload):
@@ -90,6 +92,8 @@ class OutgoingPacket:
             payload = mc_string(payload).bytes()
         elif isinstance(payload, mc_type):
             payload = payload.bytes()
+
+        orig_payload = payload
 
         pid = mc_varint(self.packet_id)
         payload = pid.bytes() + payload
@@ -109,6 +113,10 @@ class OutgoingPacket:
             packet_length.send(self.sock)
             length.send(self.sock)
             safe_send(self.sock, payload)
+
+        if pid != OutgoingKeepAlive.packet_id:
+            print("SENT PACKET (length={}, id={}, state={})".format(length, pid, self.connection.state))
+            print_hex_dump(orig_payload)
 
     def send(self):
         raise NotImplementedError("outgoing packet send() not implemented")
@@ -170,28 +178,69 @@ class LoginStart(IncomingPacket):
         print("login packet")
         username = mc_string.read(self)
 
-        compression = SetCompression(self.connection)
-        compression.send()
+        player = Player(self.connection, username)
+        self.connection.assign_player(player)
 
-        res = LoginSuccess(self.connection, username)
+        if self.config.get("online", False):
+            res = EncryptionRequest(self.connection)
+            res.send()
+
+        else:
+            compression = SetCompression(self.connection)
+            compression.send()
+
+            res = LoginSuccess(self.connection)
+            res.send()
+
+            self.connection.state = States.PLAY
+            res = JoinGame(self.connection, player)
+            res.send()
+
+class EncryptionRequest(OutgoingPacket):
+
+    packet_id = 1
+    def send(self):
+        print("making encryption request")
+
+        public_key = self.connection.crypto.get_encrypted_key_info()
+        verify_token = self.connection.crypto.verify_token
+
+        payload = mc_string("").bytes()
+        payload += mc_bytes(public_key).bytes()
+        payload += mc_bytes(verify_token).bytes()
+        self._send(payload)
+
+class EncryptionResponse(IncomingPacket):
+
+    packet_id = 1
+    def recv(self):
+        shared_secret = bytes(mc_bytes.read(self))
+        verify_token = bytes(mc_bytes.read(self))
+
+        if verify_token != self.connection.crypto.verify_token:
+            raise IllegalData("Verify tokens do not match!")
+
+        if len(shared_secret) != 16:
+            raise IllegalData("Invalid shared secret!")
+
+        self.connection.crypto.init_aes(shared_secret)
+
+        login_hash = self.connection.crypto.generate_login_hash(shared_secret)
+        self.connection.player.verify(login_hash)
+
+        res = SetCompression(self.connection)
+        res.send()
+
+        res = LoginSuccess(self.connection)
         res.send()
 
 class LoginSuccess(OutgoingPacket):
 
     packet_id = 2
-    def __init__(self, conn, username):
-        super().__init__(conn)
-        self.username = username
-
     def send(self):
-        player = Player(self.connection, self.username)
-
-        payload = mc_string(player.uuid).bytes()
-        payload += mc_string(player.username).bytes()
+        payload = mc_string(self.connection.player.uuid).bytes()
+        payload += mc_string(self.connection.player.username).bytes()
         self._send(payload)
-
-        self.connection.assign_player(player)
-        self.connection.state = States.PLAY
 
 class SetCompression(OutgoingPacket):
 
@@ -213,6 +262,9 @@ class IncomingKeepAlive(IncomingPacket):
     def recv(self):
         token = int(mc_varint.read(self))
         self.connection.keepalive.callback(token)
+
+        res = OutgoingKeepAlive(self.connection, token)
+        res.send()
 
 class OutgoingKeepAlive(OutgoingPacket):
 

@@ -7,8 +7,8 @@ import argparse
 
 # TODO: complete Chunk Data packet
 
-from version import APP_NAME, APP_VERSION
-from server import MCServer
+from .version import APP_NAME, APP_VERSION
+from .server import MCServer
 
 DEFAULT_CONFIG = {
     'max_connections': 32,

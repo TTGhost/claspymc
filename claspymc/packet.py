@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 
 import json
-import zlib
-import numpy as np
 import random
-
+import zlib
 from io import BytesIO
 
-from util import *
+import numpy as np
+
+from .net import \
+    safe_recv, safe_send, \
+    ProtocolError, IllegalData
+from .util import print_hex_dump
+from .types import \
+    mc_varint, mc_string, mc_type, \
+    mc_ushort, mc_long, mc_bytes, \
+    mc_ubyte, mc_int, mc_bool, \
+    mc_sbyte, mc_double, mc_float, \
+    mc_vec3f, mc_pos, States
 
 class IncomingPacket:
 

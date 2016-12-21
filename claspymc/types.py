@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 
-import os
 import sys
 import struct
-import socket
-import appdirs
-from nbt import nbt
 from io import BytesIO
 from enum import IntEnum
 
-from version import APP_NAME, APP_AUTHOR, APP_VERSION
-from ecache import Cache
+import nbt
 
-cache = Cache((APP_NAME, APP_AUTHOR), "{}/{}".format(APP_NAME, APP_VERSION))
+from .net import safe_recv, safe_send, ProtocolError
 
-DATA_DIR = appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
-def data_filename(server, filename):
-    directory = server.config.get("data_dir", DATA_DIR)
-    if not os.path.isdir(directory):
-        os.mkdir(directory)
+__author__ = 'Thomas Bell'
 
-    return os.path.join(directory, filename)
+def unsigned_to_signed(n, width):
+    m = (1 << (width - 1))
+    k = m - 1
+    if n & m:
+        return (n & k) - m
+    else:
+        return n & k
+
+def signed_to_unsigned(n, width):
+    m = (1 << width) - 1
+    return n & m
 
 class States(IntEnum):
     HANDSHAKING = 0
@@ -65,65 +66,6 @@ class DisplayedSkinParts(IntEnum):
     LEFT_PANT_LEG = 0x10
     RIGHT_PANT_LEG = 0x20
     HAT = 0x40
-
-class ProtocolError(Exception):
-    pass
-
-class IllegalData(ProtocolError):
-    pass
-
-def unsigned_to_signed(n, width):
-    m = (1 << (width - 1))
-    k = m - 1
-    if n & m:
-        return (n & k) - m
-    else:
-        return n & k
-
-def signed_to_unsigned(n, width):
-    m = (1 << width) - 1
-    return n & m
-
-def safe_recv(sock, buflen):
-    buf = bytearray()
-    if buflen == 0:
-        return buf
-
-    try:
-        while len(buf) < buflen:
-            new_data = sock.recv(buflen - len(buf))
-            if not new_data:
-                break
-
-            buf += new_data
-
-    except (BrokenPipeError, OSError, socket.timeout) as e:
-        print(e, file=sys.stderr)
-        raise ProtocolError(e)
-
-    if len(buf) < buflen:
-        raise ProtocolError("connection closed")
-
-    return buf
-
-def safe_send(sock, buf):
-    if type(buf) is str:
-        buf = buf.encode("utf8")
-
-    try:
-        sock.sendall(buf)
-    except (BrokenPipeError, OSError, socket.timeout) as e:
-        print(e, file=sys.stderr)
-        raise ProtocolError(e)
-
-def print_hex_dump(contents):
-    for pos in range(0x0000, len(contents), 16):
-        row = contents[pos:pos+16]
-        print("| {:04x} | {: <47} | {: <16} |".format(
-            pos,
-            ' '.join('{:02x}'.format(x) for x in row),
-            ''.join((chr(x) if (0x20 <= x < 0x7f) else '.') for x in row)
-        ))
 
 class mc_type:
 

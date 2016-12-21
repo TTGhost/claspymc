@@ -3,9 +3,8 @@
 import socket
 import threading
 
-from util import *
-from crypto import generate_keys
-from connection import MCConnection
+from .connection import MCConnection
+from .crypto import generate_keys
 
 class MCServer:
 

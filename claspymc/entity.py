@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from util import *
+from .types import mc_slot, mc_vec3f
 
 __author__ = 'thomas'
 

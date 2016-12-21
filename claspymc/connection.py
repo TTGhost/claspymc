@@ -3,11 +3,16 @@
 import sys
 import threading
 
-from util import *
-import packet
-from player import Player
-from keepalive import KeepAlive
-from crypto import CryptoState
+from .packet import \
+    SetCompression, LoginSuccess, JoinGame, \
+    OutgoingPluginMessage, IncomingPacket, Disconnect
+from .crypto import CryptoState
+from .keepalive import KeepAlive
+from .player import Player
+
+from .net import ProtocolError, IllegalData
+from .types import mc_varint, mc_string, States
+from .version import APP_NAME, APP_VERSION
 
 class MCConnection:
 
@@ -38,14 +43,14 @@ class MCConnection:
 
     def join_game(self):
 
-        packet.SetCompression(self).send()
-        packet.LoginSuccess(self).send()
+        SetCompression(self).send()
+        LoginSuccess(self).send()
 
         self.state = States.PLAY
-        packet.JoinGame(self).send()
+        JoinGame(self).send()
 
         impl_name = mc_string("{}/{}".format(APP_NAME, APP_VERSION)).bytes()
-        packet.OutgoingPluginMessage(self, "MC|Brand", impl_name).send()
+        OutgoingPluginMessage(self, "MC|Brand", impl_name).send()
 
         self.player.spawn()
 
@@ -56,7 +61,7 @@ class MCConnection:
                 if self.closed:
                     return
 
-                pkt = packet.IncomingPacket.from_connection(self)
+                pkt = IncomingPacket.from_connection(self)
                 pkt.recv()
 
             self.keepalive.start()
@@ -65,13 +70,13 @@ class MCConnection:
                 if self.closed:
                     return
 
-                pkt = packet.IncomingPacket.from_connection(self)
+                pkt = IncomingPacket.from_connection(self)
                 pkt.recv()
                 self.keepalive.check()
 
         except IllegalData as e:
             print(e, file=sys.stderr)
-            pkt = packet.Disconnect(self, str(e))
+            pkt = Disconnect(self, str(e))
             pkt.send()
 
         except ProtocolError as e:

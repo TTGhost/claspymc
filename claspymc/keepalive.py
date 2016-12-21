@@ -4,8 +4,10 @@ import threading
 import time
 from random import randint
 
-from util import *
-from packet import OutgoingKeepAlive
+from .net import ProtocolError
+from .packet import OutgoingKeepAlive
+
+from claspymc.util import *
 
 __author__ = 'Thomas Bell'
 

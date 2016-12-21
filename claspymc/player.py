@@ -3,15 +3,20 @@
 import os
 import json
 import uuid
-import numpy as np
-from nbt import nbt
-from urllib.request import urlopen
+from urllib.error import HTTPError
 from urllib.parse import quote
-from urllib.error import URLError, HTTPError
+from urllib.request import urlopen
 
-from util import *
-from entity import PlayerEntity
-import packet
+from nbt import nbt
+import numpy as np
+
+from .net import IllegalData
+from .util import data_filename, cache
+from .types import Gamemode, Dimension, Difficulty
+from .entity import PlayerEntity
+from .packet import \
+    ServerDifficulty, SpawnPosition, OutgoingPlayerAbilities, \
+    OutgoingPlayerPositionLook
 
 __author__ = 'Thomas Bell'
 
@@ -61,14 +66,13 @@ class Player:
         self.is_ready = False
 
     def spawn(self):
-        packet.ServerDifficulty(self.connection).send()
-        packet.SpawnPosition(self.connection).send()
-        packet.OutgoingPlayerAbilities(self.connection).send()
-        packet.OutgoingPlayerPositionLook(self.connection,
-                                          self.spawn_position,
-                                          self.yaw,
-                                          self.pitch).send()
-
+        ServerDifficulty(self.connection).send()
+        SpawnPosition(self.connection).send()
+        OutgoingPlayerAbilities(self.connection).send()
+        OutgoingPlayerPositionLook(self.connection,
+                                   self.spawn_position,
+                                   self.yaw,
+                                   self.pitch).send()
 
     def _resolve_uuid(self):
         user_name = quote(str(self.username))

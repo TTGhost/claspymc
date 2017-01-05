@@ -12,11 +12,11 @@ from .net import \
     ProtocolError, IllegalData
 from .util import print_hex_dump
 from .types import \
-    mc_varint, mc_string, mc_type, \
+    mc_varint, mc_string, mc_nettype, \
     mc_ushort, mc_long, mc_bytes, \
     mc_ubyte, mc_int, mc_bool, \
     mc_sbyte, mc_double, mc_float, \
-    mc_vec3f, mc_pos, States
+    mc_vec3f, mc_pos, States, Gamemode, nbt_to_bytes
 
 class IncomingPacket:
 
@@ -96,7 +96,7 @@ class OutgoingPacket:
     def _send(self, payload):
         if type(payload) is str:
             payload = mc_string(payload).bytes()
-        elif isinstance(payload, mc_type):
+        elif isinstance(payload, mc_nettype):
             payload = payload.bytes()
 
         orig_payload = payload
@@ -274,9 +274,9 @@ class JoinGame(OutgoingPacket):
         print("join packet")
         payload = b''
         payload += mc_int(self.player.entity.entity_id).bytes()
-        payload += mc_ubyte(self.player.gamemode).bytes()
-        payload += mc_sbyte(self.player.dimension).bytes()
-        payload += mc_ubyte(self.player.difficulty).bytes()
+        payload += mc_ubyte(self.player.entity.gamemode).bytes()
+        payload += mc_sbyte(self.player.entity.dimension).bytes()
+        payload += mc_ubyte(self.server.world.level.difficulty).bytes()
         payload += mc_ubyte(self.config.get("players", {}).get("max", 10)).bytes()
         payload += mc_string("default").bytes()
         payload += mc_bool(False).bytes()
@@ -338,29 +338,39 @@ class ServerDifficulty(OutgoingPacket):
 
     packet_id = 0x0D
     def send(self):
-        self._send(mc_ubyte(self.player.difficulty).bytes())
+        self._send(mc_ubyte(self.server.world.level.difficulty).bytes())
 
 class SpawnPosition(OutgoingPacket):
 
     packet_id = 0x43
     def send(self):
-        self._send(mc_pos(self.player.spawn_position).bytes())
+        self._send(mc_pos(self.server.world.level.spawn_position).bytes())
 
 class OutgoingPlayerAbilities(OutgoingPacket):
 
     packet_id = 0x2B
     def send(self):
         payload = b''
-        payload += mc_sbyte(self.player.abilities).bytes()
-        payload += mc_float(self.player.flying_speed).bytes()
-        payload += mc_float(self.player.fov_modifier).bytes()
+        abilities = 0
+        if self.player.entity.abilities.invulnerable:
+            abilities |= 0x01
+        if self.player.entity.abilities.is_flying:
+            abilities |= 0x02
+        if self.player.entity.abilities.can_fly:
+            abilities |= 0x04
+        if self.player.entity.gamemode == Gamemode.CREATIVE:
+            abilities |= 0x08
+
+        payload += mc_sbyte(abilities).bytes()
+        payload += mc_float(self.player.entity.abilities.fly_speed).bytes()
+        payload += mc_float(self.player.entity.abilities.walk_speed).bytes()
         self._send(payload)
 
 class BasicPlayerUpdate(IncomingPacket):
 
     packet_id = 0x0F
     def recv(self):
-        self.connection.player.on_ground = mc_bool.read(self)
+        self.connection.player.entity.on_ground = mc_bool.read(self)
 
 class PlayerPositionUpdate(IncomingPacket):
 
@@ -370,39 +380,39 @@ class PlayerPositionUpdate(IncomingPacket):
         pos[0] = mc_double.read(self)
         pos[1] = mc_double.read(self)
         pos[2] = mc_double.read(self)
-        if isinstance(self.connection.player.position, np.array):
+        if isinstance(self.player.entity.position, np.array):
             diff = np.linalg.norm(pos - self.connection.player.position)
             if diff > 100:
                 raise IllegalData("You moved too quickly!")
 
-        self.connection.player.position = pos
-        self.connection.player.on_ground = mc_bool.read(self)
+        self.player.entity.position = mc_vec3f(pos)
+        self.player.entity.on_ground = mc_bool.read(self)
 
 class PlayerLookUpdate(IncomingPacket):
 
     packet_id = 0x0E
     def recv(self):
-        self.connection.player.yaw = mc_float.read(self)
-        self.connection.player.pitch = mc_float.read(self)
-        self.connection.player.on_ground = mc_bool.read(self)
+        self.player.entity.yaw = mc_float.read(self)
+        self.player.entity.pitch = mc_float.read(self)
+        self.player.entity.on_ground = mc_bool.read(self)
 
 class IncomingPlayerPositionLook(IncomingPacket):
 
     packet_id = 0x0D
     def recv(self):
-        pos = np.array([0, 0, 0])
+        pos = np.array([0.0, 0.0, 0.0])
         pos[0] = mc_double.read(self)
         pos[1] = mc_double.read(self)
         pos[2] = mc_double.read(self)
-        if isinstance(self.connection.player.position, np.ndarray):
+        if isinstance(self.player.entity.position, np.ndarray):
             diff = np.linalg.norm(pos - self.connection.player.position)
             if diff > 100:
                 raise IllegalData("You moved too quickly!")
 
-        self.connection.player.position = pos
-        self.connection.player.yaw = mc_float.read(self)
-        self.connection.player.pitch = mc_float.read(self)
-        self.connection.player.on_ground = mc_bool.read(self)
+        self.player.entity.position = pos
+        self.player.entity.yaw = mc_float.read(self)
+        self.player.entity.pitch = mc_float.read(self)
+        self.player.entity.on_ground = mc_bool.read(self)
 
 class OutgoingPlayerPositionLook(OutgoingPacket):
 
@@ -431,9 +441,9 @@ class OutgoingPlayerPositionLook(OutgoingPacket):
 
     def send(self):
         payload = b''
-        last_pos = mc_vec3f(self.player.position)
-        last_pitch = self.player.pitch
-        last_yaw = self.player.yaw
+        last_pos = mc_vec3f(self.player.entity.position)
+        last_pitch = self.player.entity.pitch
+        last_yaw = self.player.entity.yaw
 
         pos = mc_vec3f(self.pos if self.pos is not None else last_pos)
         pitch = self.pitch if self.pitch is not None else last_pitch
@@ -474,17 +484,43 @@ class TeleportConfirm(IncomingPacket):
 class ChunkData(OutgoingPacket):
 
     packet_id = 0x20
-    def __init__(self, conn, chunk):
+    def __init__(self, conn, x, z):
         super().__init__(conn)
-        self.chunk = chunk  # chunk is an NBTFile
+        self.x = x
+        self.z = z
+        self.chunk = self.server.world.get_chunk(x, z)
 
     def send(self):
         payload = b''
-        payload += mc_int(self.chunk["Level"]["xPos"].value).bytes()
-        payload += mc_int(self.chunk["Level"]["yPos"].value).bytes()
-        n = 1 << (len(self.chunk["Level"]["Sections"]) + 1)
-        payload += mc_varint(~n & (n - 1)).bytes()
-        sections = b''
+        payload += mc_int(self.x).bytes()
+        payload += mc_int(self.z).bytes()
+        payload += mc_bool(True).bytes()
+        bitmask = 0
+        biomes = self.chunk.biomes.bytes()
+        size = len(biomes)
+        sections = [b'' for i in range(0, 256, 16)]
+        print(self.chunk.sections)
+        for section in self.chunk.sections:
+            bitmask |= (1 << section.y_index)
+            s_bytes = section.bytes()
+            size += len(s_bytes)
+            sections[section.y_index] = s_bytes
+
+        payload += mc_varint(bitmask).bytes()
+        payload += mc_varint(size).bytes()
+        payload += b''.join(sections)
+        payload += biomes
+
+        entities = b''
+        for entity in self.chunk.tile_entities:
+            entities += nbt_to_bytes(entity.to_nbt())
+
+        # hacky workaround (vanilla client complains of 1 byte extra, commenting this out
+        # makes it work)
+        #payload += mc_varint(len(self.chunk.tile_entities)).bytes()
+        #payload += entities
+        self._send(payload)
+
 
 IncomingPacket.PLAY_PACKET_MAP = {
     0x00: TeleportConfirm,

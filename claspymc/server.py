@@ -5,6 +5,7 @@ import threading
 
 from .connection import MCConnection
 from .crypto import generate_keys
+from .world import MCWorld
 
 class MCServer:
 
@@ -20,11 +21,15 @@ class MCServer:
         self.players = []
         self.entities = []
         self.private_key, self.public_key = generate_keys()
+        self.world = MCWorld(config.get("world", None))
 
         self.thread = threading.Thread(target=self._worker)
 
     def start(self):
         self.thread.start()
+
+    def join(self, *args, **kwargs):
+        self.thread.join(*args, **kwargs)
 
     def _worker(self):
         host = self.config.get("host", "")

@@ -13,11 +13,13 @@ from .server import MCServer
 DEFAULT_CONFIG = {
     'max_connections': 32,
     'timeout': 15,
+    "host": "",
     "port": 25565,
     "ipv6": True,
     "online": False,
     "compression": 2,
     "difficulty": 1,
+    "world": "/home/thomas/Documents/mc/1.9/world",
     "keepalive": {
         "send_interval": 10,
         "timeout": 30
@@ -31,7 +33,8 @@ DEFAULT_CONFIG = {
 servers = []
 def cleanup():
     for server in servers:
-        if server: server.close()
+        if server:
+            server.close()
 
 atexit.register(cleanup)
 
@@ -57,11 +60,17 @@ def main():
             server.start()
             servers.append(server)
 
+        for server in servers:
+            server.join()
+
     except (KeyboardInterrupt, SystemExit, Exception) as e:
         print(e, file=sys.stderr)
 
     except (ValueError, KeyError) as e:
         print("Error parsing configuration: {}".format(e), file=sys.stderr)
+
+    finally:
+        cleanup()
 
 if __name__ == "__main__":
     main()

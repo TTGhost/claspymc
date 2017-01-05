@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 import sys
+import uuid
 import struct
 from io import BytesIO
 from enum import IntEnum
 
-import nbt
+from nbt import nbt
 
 from .net import safe_recv, safe_send, ProtocolError
 
@@ -22,6 +23,12 @@ def unsigned_to_signed(n, width):
 def signed_to_unsigned(n, width):
     m = (1 << width) - 1
     return n & m
+
+def nbt_to_bytes(tag):
+    buf = BytesIO()
+    tag._render_buffer(buf)
+    buf.seek(0)
+    return buf.read()
 
 class States(IntEnum):
     HANDSHAKING = 0
@@ -67,41 +74,40 @@ class DisplayedSkinParts(IntEnum):
     RIGHT_PANT_LEG = 0x20
     HAT = 0x40
 
-class mc_type:
+class mc_nettype:
 
-    @staticmethod
-    def _recv_unpack(fmt):
-        @classmethod
-        def recv(cls, sock):
-            buf = safe_recv(sock, struct.calcsize(fmt))
+    format = None
 
-            (res,) = struct.unpack(fmt, buf)
+    @classmethod
+    def recv(cls, sock):
+        if not cls.format:
+            raise NotImplementedError("format undefined for mc_type subclass {}".format(cls.__name__))
 
-            return cls(res)
+        buf = safe_recv(sock, struct.calcsize(cls.format))
 
-        return recv
+        (res,) = struct.unpack(cls.format, buf)
 
-    @staticmethod
-    def _read_unpack(fmt):
-        @classmethod
-        def read(cls, fp):
-            buf = fp.read(struct.calcsize(fmt))
+        return cls(res)
 
-            (res,) = struct.unpack(fmt, buf)
+    @classmethod
+    def read(cls, fp):
+        if not cls.format:
+            raise NotImplementedError("format undefined for mc_type subclass {}".format(cls.__name__))
 
-            return cls(res)
+        buf = fp.read(struct.calcsize(cls.format))
 
-        return read
+        (res,) = struct.unpack(cls.format, buf)
 
-    @staticmethod
-    def _bytes_pack(fmt):
-        def __bytes__(self):
-            try:
-                return struct.pack(fmt, self)
-            except struct.error:
-                raise ProtocolError("invalid value for mc_type ({})".format(self.__class__.__name__))
+        return cls(res)
 
-        return __bytes__
+    def __bytes__(self):
+        if not self.format:
+            raise NotImplementedError("format undefined for mc_type subclass {}".format(type(self).__name__))
+
+        try:
+            return struct.pack(self.format, self)
+        except struct.error:
+            raise ProtocolError("invalid value for mc_type ({})".format(type(self).__name__))
 
     def bytes(self):
         return bytes(self)
@@ -109,7 +115,33 @@ class mc_type:
     def send(self, sock):
         safe_send(sock, self.bytes())
 
-class mc_varnum(mc_type, int):
+class mc_nbttype:
+
+    nbt_type = type(None)
+    _default = None
+
+    @classmethod
+    def get_default(cls):
+        if cls._default is not None:
+            return cls(cls._default)
+        else:
+            return cls()
+
+    @classmethod
+    def from_nbt(cls, tag):
+        if not isinstance(tag, cls.nbt_type):
+            raise ValueError("invalid type for {}: {} instead of {}".format(
+                cls.__name__, type(tag).__name__, cls.nbt_type.__name__))
+
+        return cls(tag.value)
+
+    def to_nbt(self):
+        if self.nbt_type is type(None):
+            raise NotImplementedError("to_nbt not implemented for mc_nbt subclass {}".format(type(self).__name__))
+
+        return self.nbt_type(self)
+
+class mc_varnum(mc_nettype, int):
 
     _width = None
 
@@ -170,10 +202,12 @@ class mc_varint(mc_varnum):
 class mc_varlong(mc_varnum):
     _width = 64
 
-class mc_string(mc_type, str):
+class mc_string(mc_nettype, mc_nbttype, str):
 
-    @staticmethod
-    def read(fp):
+    nbt_type = nbt.TAG_String
+
+    @classmethod
+    def read(cls, fp):
         length = mc_varint.read(fp)
 
         try:
@@ -182,10 +216,10 @@ class mc_string(mc_type, str):
             print(e, file=sys.stderr)
             raise ProtocolError(e)
 
-        return mc_string(s)
+        return cls(s)
 
-    @staticmethod
-    def recv(sock):
+    @classmethod
+    def recv(cls, sock):
         length = mc_varint.recv(sock)
 
         try:
@@ -194,52 +228,61 @@ class mc_string(mc_type, str):
             print(e, file=sys.stderr)
             raise ProtocolError(e)
 
-        return mc_string(s)
+        return cls(s)
 
     def bytes(self):
         res = self.encode("utf8")
         return bytes(mc_varint(len(res))) + res
 
-class mc_bytes(mc_type, bytes):
+class mc_bytes(mc_nettype, mc_nbttype, bytes):
 
-    @staticmethod
-    def read(fp):
+    nbt_type = nbt.TAG_Byte_Array
+
+    @classmethod
+    def read(cls, fp):
         length = mc_varint.read(fp)
         array = fp.read(length)
 
-        return mc_bytes(array)
+        return cls(array)
 
-    @staticmethod
-    def recv(sock):
+    @classmethod
+    def recv(cls, sock):
         length = mc_varint.recv(sock)
         array = safe_recv(sock, length)
 
-        return mc_bytes(array)
+        return cls(array)
 
     def bytes(self):
-        return bytes(mc_varint(len(self))) + bytes(self)
+        return bytes(mc_varint(len(self))) + self
 
-class mc_pos(mc_type, list):
+class mc_byte_array(mc_nbttype, bytes):
 
-    @staticmethod
-    def read(fp):
+    nbt_type = nbt.TAG_Byte_Array
+
+    def bytes(self):
+        return self
+
+class mc_pos(mc_nettype, list):
+
+    @classmethod
+    def read(cls, fp):
         n = mc_long.read(fp)
 
         x = unsigned_to_signed(n >> 38, 26)
         y = unsigned_to_signed(n >> 26, 12)
         z = unsigned_to_signed(n, 26)
 
-        return mc_pos((x, y, z))
+        return cls((x, y, z))
 
-    @staticmethod
-    def recv(sock):
+    @classmethod
+    def recv(cls, sock):
         n = mc_long.recv(sock)
 
         x = unsigned_to_signed(n >> 38, 26)
         y = unsigned_to_signed(n >> 26, 12)
         z = unsigned_to_signed(n, 26)
 
-        return mc_pos((x, y, z))
+        return cls((x, y, z))
 
     @property
     def x(self): return self[0]
@@ -265,7 +308,10 @@ class mc_pos(mc_type, list):
 
         return struct.pack("!Q", n)
 
-class mc_vec3f(mc_type, list):
+class mc_vec3f(mc_nettype, mc_nbttype, list):
+
+    nbt_type = nbt.TAG_List
+    _default = (0, 0, 0)
 
     @property
     def x(self): return self[0]
@@ -282,83 +328,290 @@ class mc_vec3f(mc_type, list):
     @z.setter
     def z(self, v): self[2] = v
 
-class mc_float(mc_type, float):
-    read = mc_type._read_unpack("!f")
-    recv = mc_type._recv_unpack("!f")
-    __bytes__ = mc_type._bytes_pack("!f")
+    @classmethod
+    def from_nbt(cls, tag_list):
+        if not isinstance(tag_list, nbt.TAG_List) or \
+                        tag_list.tagID != nbt.TAG_DOUBLE or \
+                        len(tag_list) != 3:
+            raise ValueError("mc_vec3f NBT representation must be a TAG_List of 3 TAG_Doubles")
 
-class mc_double(mc_type, float):  # heh
-    read = mc_type._read_unpack("!d")
-    recv = mc_type._recv_unpack("!d")
-    __bytes__ = mc_type._bytes_pack("!d")
+        x = tag_list[0].value
+        y = tag_list[1].value
+        z = tag_list[2].value
+        return cls((x, y, z))
 
-class mc_long(mc_type, int):
-    read = mc_type._read_unpack("!q")
-    recv = mc_type._recv_unpack("!q")
-    __bytes__ = mc_type._bytes_pack("!q")
+    def to_nbt(self):
+        result = nbt.TAG_List(nbt.TAG_Double)
+        result.append(nbt.TAG_Double(self.x))
+        result.append(nbt.TAG_Double(self.y))
+        result.append(nbt.TAG_Double(self.z))
+        return result
 
-class mc_int(mc_type, int):
-    read = mc_type._read_unpack("!i")
-    recv = mc_type._recv_unpack("!i")
-    __bytes__ = mc_type._bytes_pack("!i")
+class mc_float(mc_nettype, mc_nbttype, float):
+    format = "!f"
+    nbt_type = nbt.TAG_Float
 
-class mc_ushort(mc_type, int):
-    read = mc_type._read_unpack("!H")
-    recv = mc_type._recv_unpack("!H")
-    __bytes__ = mc_type._bytes_pack("!H")
+class mc_double(mc_nettype, mc_nbttype, float):  # heh
+    format = "!d"
+    nbt_type = nbt.TAG_Double
 
-class mc_sshort(mc_type, int):
-    read = mc_type._read_unpack("!h")
-    recv = mc_type._recv_unpack("!h")
-    __bytes__ = mc_type._bytes_pack("!h")
+class mc_long(mc_nettype, mc_nbttype, int):
+    format = "!q"
+    nbt_type = nbt.TAG_Long
 
-class mc_ubyte(mc_type, int):
-    read = mc_type._read_unpack("!B")
-    recv = mc_type._recv_unpack("!B")
-    __bytes__ = mc_type._bytes_pack("!B")
+class mc_int(mc_nettype, mc_nbttype, int):
+    format = "!i"
+    nbt_type = nbt.TAG_Int
 
-class mc_sbyte(mc_type, int):
-    read = mc_type._read_unpack("!b")
-    recv = mc_type._recv_unpack("!b")
-    __bytes__ = mc_type._bytes_pack("!b")
+class mc_ushort(mc_nettype, mc_nbttype, int):
+    format = "!H"
+    nbt_type = nbt.TAG_Short
 
-class mc_bool(mc_type, int):
-    read = mc_type._read_unpack("!?")
-    recv = mc_type._recv_unpack("!?")
-    __bytes__ = mc_type._bytes_pack("!?")
+class mc_sshort(mc_nettype, mc_nbttype, int):
+    format = "!h"
+    nbt_type = nbt.TAG_Short
 
-class mc_slot(mc_type):
+class mc_ubyte(mc_nettype, mc_nbttype, int):
+    format = "!B"
+    nbt_type = nbt.TAG_Byte
 
-    id = mc_sshort(-1)
-    count = mc_ubyte(0)
-    damage = mc_ushort(0)
-    nbt = None
-    def __init__(self, item_id=mc_sshort(-1), count=mc_ubyte(0), damage=mc_ushort(0), buffer=None):
-        self.id = item_id
-        self.count = count
-        self.damage = damage
-        if buffer:
-            self.nbt = nbt.TAG_Compound(buffer)
+class mc_sbyte(mc_nettype, mc_nbttype, int):
+    format = "!b"
+    nbt_type = nbt.TAG_Byte
 
-    def __bytes__(self):
-        payload = b''
-        payload += mc_sshort(self.id).bytes()
-        if self.id == -1:
-            return payload
-        payload += mc_ubyte(self.count).bytes()
-        payload += mc_ushort(0).bytes()
-        if not self.nbt:
-            payload += b'\x00'
-            return payload
+class mc_bool(mc_nettype, mc_nbttype, int):
+    format = "!?"
+    nbt_type = nbt.TAG_Byte
+
+class mc_list(mc_nbttype, list):
+
+    nbt_type = nbt.TAG_List
+    _default = nbt.TAG_Compound
+
+    def __init__(self, item_type):
+        super().__init__()
+        self.item_type = item_type
+
+    @classmethod
+    def from_nbt(cls, tag, sub_type=None):
+        if not isinstance(tag, cls.nbt_type):
+            raise ValueError("invalid type for {}: {} instead of {}".format(
+                cls.__name__, type(tag).__name__, cls.nbt_type.__name__))
+
+        if sub_type is not None and not issubclass(sub_type, mc_nbttype):
+            raise ValueError("sub_type must be a subclass of mc_nbt")
+
+        try:
+            item_type = nbt.TAGLIST[tag.tagID]
+        except KeyError:
+            raise ValueError("invalid list value type for {}: {}".format(
+                cls.__name__, tag.tagID))
+
+        result = cls(item_type)
+        for item in tag:
+            if sub_type is not None:
+                result.append(sub_type.from_nbt(item))
+            else:
+                result.append(item)
+
+        return result
+
+    def to_nbt(self):
+        items = []
+        for item in self:
+            if isinstance(item, mc_nbttype):
+                items.append(item.to_nbt())
+            else:
+                items.append(item)
+
+        result = self.nbt_type(self.item_type)
+        for item in items:
+            result.append(item)
+
+        return result
+
+class mc_field:
+
+    def __init__(self, nbt_key, container_cls, *, optional=False):
+        if not issubclass(container_cls, mc_nbttype):
+            raise ValueError("mc_field container_cls must be a subclass of mc_nbttype")
+
+        self.key = nbt_key
+        self.container = container_cls
+        self.recursive = False
+        self.optional = optional
+
+    def get_new(self):
+        return self.container.get_default()
+
+    def __get__(self, instance, owner):
+        if self.key in instance._values:
+            return instance._values[self.key]
         else:
-            payload += b'\x01'
-            buf = BytesIO()
-            self.nbt._render_buffer(buf)
-            buf.seek(0)
-            payload += buf.read()
-            return payload
+            return self.get_new()
 
-class mc_chunk_section(mc_type):
+    def __set__(self, instance, value):
+        if not isinstance(value, self.container):
+            value = self.container(value)
+        instance._values[self.key] = value
+
+    def from_nbt(self, tag):
+        return self.container.from_nbt(tag)
+
+    def from_nbt_recursive(self, tag, cls):
+        return self.from_nbt(tag)
+
+class mc_list_field(mc_field):
+
+    def __init__(self, nbt_key, item_cls=None, *, recursive=False, length=None, optional=False):
+        super().__init__(nbt_key, mc_list)
+        if recursive:
+            item_cls = mc_comp
+
+        if not issubclass(item_cls, mc_nbttype):
+            raise ValueError("mc_field item_cls must be a subclass of mc_nbttype")
+
+        self.item_type = item_cls
+        self.default = mc_list(item_cls)
+        self.recursive = recursive
+        self.length = length
+        self.optional = optional
+
+    def get_new(self):
+        result = mc_list(self.item_type)
+        if self.length is not None:
+            for i in range(self.length):
+                result.append(self.item_type.get_default())
+
+        return result
+
+    def from_nbt(self, tag):
+        return self.container.from_nbt(tag, sub_type=self.item_type)
+
+    def __set__(self, instance, value):
+        if not isinstance(value, mc_list):
+            result = mc_list(self.item_type)
+            try:
+                for item in value:
+                    if not isinstance(item, self.item_type):
+                        item = self.item_type(item)
+                    result.append(item)
+            except (TypeError, ValueError):
+                pass
+
+            instance._values[self.key] = result
+        else:
+            instance._values[self.key] = value
+
+    def from_nbt_recursive(self, tag, cls):
+        return self.container.from_nbt(tag, sub_type=cls)
+
+class mc_uuid_field:  # pseudo field
+
+    def __init__(self, most_field, least_field):
+        self.most_field = most_field
+        self.least_field = least_field
+
+    def __get__(self, instance, owner):
+        most = self.most_field.__get__(instance, owner)
+        least = self.least_field.__get__(instance, owner)
+        return uuid.UUID(int=((most << 64) | least))
+
+    def __set__(self, instance, value):
+        n = value.int
+        most = (n >> 64)
+        least = n & ((1 << 64) - 1)
+        self.most_field.__set__(instance, most)
+        self.least_field.__set__(instance, least)
+
+class mc_list_item_field:  # pseudo field
+
+    def __init__(self, list_field, index):
+        self.list_field = list_field
+        self.index = index
+
+    def __get__(self, instance, owner):
+        return self.list_field.__get__(instance, owner)[self.index]
+
+    def __set__(self, instance, value):
+        if not isinstance(value, self.list_field.item_type):
+            value = self.list_field.item_type(value)
+
+        array = self.list_field.__get__(instance, type(instance))
+        array[self.index] = value
+        self.list_field.__set__(instance, array)
+
+class mc_split_pos_field:  # pseudo field
+
+    def __init__(self, x, y, z):
+        self.x_field = x
+        self.y_field = y
+        self.z_field = z
+
+    def __get__(self, instance, owner):
+        x = self.x_field.__get__(instance, owner)
+        y = self.y_field.__get__(instance, owner)
+        z = self.z_field.__get__(instance, owner)
+        return mc_vec3f((x, y, z))
+
+    def __set__(self, instance, value):
+        if isinstance(value, mc_pos):
+            value = mc_vec3f((value.x, value.y, value.z))
+
+        if not isinstance(value, mc_vec3f):
+            value = mc_vec3f(value)
+
+        self.x_field.__set__(instance, value.x)
+        self.y_field.__set__(instance, value.y)
+        self.z_field.__set__(instance, value.z)
+
+class mc_comp_meta(type):
+
+    def __new__(cls, name, bases, namespace, **kwargs):
+        result = type.__new__(cls, name, bases, namespace)
+        result._fields = [v for v in namespace.values() if isinstance(v, mc_field)]
+
+        return result
+
+class mc_comp(mc_nbttype, metaclass=mc_comp_meta):
+
+    nbt_type = nbt.TAG_Compound
+
+    def __init__(self):
+        self.nbt = None
+
+        self._keys = {}
+        self._values = {}
+        for field in self._fields:
+            self._keys[field.key] = field
+            if not field.optional:
+                self._values[field.key] = field.get_new()
+
+    @classmethod
+    def from_nbt(cls, tag):
+        if not isinstance(tag, cls.nbt_type):
+            raise ValueError("invalid type for {}: {} instead of {}".format(
+                cls.__name__, type(tag).__name__, cls.nbt_type.__name__))
+
+        result = cls()
+        result.nbt = tag
+        for nbt_key, field in result._keys.items():
+            if nbt_key in tag:
+                if field.recursive:
+                    field.__set__(result, field.from_nbt_recursive(tag[nbt_key], cls))
+                else:
+                    field.__set__(result, field.from_nbt(tag[nbt_key]))
+
+        return result
+
+    def to_nbt(self):
+        result = self.nbt if self.nbt is not None else self.nbt_type()
+        for nbt_key, value in self._values.items():
+            result[nbt_key] = value.to_nbt()
+
+        return result
+
+class mc_chunk_section(mc_nettype):
 
     def __init__(self, nbt_section):
         self.nbt = nbt_section

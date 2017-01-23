@@ -55,8 +55,8 @@ class Player:
                                    self.entity.yaw,
                                    self.entity.pitch).send()
         ChunkData(self.connection,
-                  self.entity.position.x >> 4,
-                  self.entity.position.z >> 4).send()
+                  int(self.entity.position.x) >> 4,
+                  int(self.entity.position.z) >> 4).send()
 
     def _resolve_uuid(self):
         user_name = quote(str(self.username))

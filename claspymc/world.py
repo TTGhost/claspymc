@@ -2,7 +2,7 @@
 
 import os
 import os.path
-from path import Path
+from pathlib import Path
 from math import ceil
 
 from nbt import chunk, nbt, region, world
@@ -36,6 +36,10 @@ class LevelData(mc_comp):
     thundering = mc_field("thundering", mc_bool)
     thunder_time = mc_field("thunderTime", mc_int)
     clear_time = mc_field("clearWeatherTime", mc_int)
+
+class LevelContainer(mc_comp):
+
+    data = mc_field("Data", LevelData)
 
 class Section(mc_comp):
 
@@ -119,7 +123,7 @@ class MCWorld:
             raise NotADirectoryError("MCWorld base path must exist and be a directory.")
 
         self.base = Path(path)
-        if not self.base.isdir():
+        if not self.base.is_dir():
             raise ValueError("MCWorld base path must exist and be a directory.")
 
         try:
@@ -127,7 +131,8 @@ class MCWorld:
         except OSError:
             raise ValueError("MCWorld level.dat is not an NBT file.")
 
-        self.level = LevelData.from_nbt(self.level_nbt)
+        self.level_container = LevelContainer.from_nbt(self.level_nbt)
+        self.level = self.level_container.data
         self.regions = {}
         self.chunks = {}
 
@@ -150,7 +155,7 @@ class MCWorld:
             return self.chunks[(dimension, x, z)].level
 
         reg = self.get_region(x >> 5, z >> 5, dimension=dimension)
-        root = reg.get_nbt(x, z)
+        root = reg.get_nbt(x & 0x1f, z & 0x1f)
         container = ChunkContainer.from_nbt(root)
         self.chunks[(dimension, x, z)] = container
         return container.level
@@ -163,7 +168,7 @@ class MCWorld:
             return PlayerEntity()
 
         result = PlayerEntity.from_nbt(file)
-        if result.position == mc_vec3f((0, 0, 0)):
+        if result.position == mc_vec3f.get_default():
             result.position = mc_vec3f(self.level.spawn_position)
             result.spawn_position = mc_vec3f(self.level.spawn_position)
 

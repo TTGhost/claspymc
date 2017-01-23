@@ -40,26 +40,46 @@ class IncomingPacket:
 
     @staticmethod
     def from_connection(conn):
-        packet_length = mc_varint.recv(conn.sock)
+        try:
+            packet_length = mc_varint.recv(conn.sock)
 
-        if conn.compression < 0:
-            packet_id = mc_varint.recv(conn.sock)
-            length = packet_length - len(packet_id)
-            buffer = BytesIO(safe_recv(conn.sock, length))
+            if conn.compression < 0:
+                packet_id = mc_varint.recv(conn.sock)
+                length = packet_length - len(packet_id)
+                if length < 0:
+                    raise IllegalData("Invalid data length")
 
-        else:
-            length = mc_varint.recv(conn.sock)
-            if length < conn.compression:
-                raise ProtocolError("packet too small for compression")
+                buffer = BytesIO(safe_recv(conn.sock, length))
 
-            compress_length = packet_length - len(length)
-            buffer = BytesIO(zlib.decompress(safe_recv(conn.sock, compress_length)))
-            packet_id = mc_varint.read(buffer)
+            else:
+                length = mc_varint.recv(conn.sock)
+                if length == 0:  # no compression
+                    packet_id = mc_varint.recv(conn.sock)
+                    buffer_length = packet_length - (len(length) + len(packet_id))
+                    if buffer_length < 0:
+                        raise IllegalData("Invalid data length")
+
+                    buffer = BytesIO(safe_recv(conn.sock, buffer_length))
+                elif length > 0:
+                    if length < conn.compression:
+                        raise IllegalData("Packet length invalid for compression")
+
+                    compress_length = packet_length - len(length)
+                    if compress_length <= 0:  # if == 0, packet_id does not exist
+                        raise IllegalData("Invalid compressed data length")
+
+                    full_msg = BytesIO(zlib.decompress(safe_recv(conn.sock, compress_length)))
+                    packet_id = mc_varint.recv(full_msg)
+                    buffer = BytesIO(full_msg.read())
+                else:
+                    raise IllegalData("Invalid data length")
+
+        except (zlib.error, IllegalData) as e:
+            raise IllegalData("Incoming packet format invalid: {}".format(str(e)))
 
         if packet_id != IncomingKeepAlive.packet_id or conn.state != States.PLAY:
             print("RECV PACKET (length={}, id={}, state={})".format(length, packet_id, conn.state))
-            print_hex_dump(buffer.read())
-            buffer.seek(0)
+            print_hex_dump(buffer.getvalue())
 
         if conn.state == States.HANDSHAKING:
             if packet_id == 0x00:
@@ -372,23 +392,25 @@ class BasicPlayerUpdate(IncomingPacket):
     def recv(self):
         self.connection.player.entity.on_ground = mc_bool.read(self)
 
-class PlayerPositionUpdate(IncomingPacket):
+class IncomingPlayerPosition(IncomingPacket):
 
     packet_id = 0x0C
     def recv(self):
-        pos = np.array([0, 0, 0])
-        pos[0] = mc_double.read(self)
-        pos[1] = mc_double.read(self)
-        pos[2] = mc_double.read(self)
-        if isinstance(self.player.entity.position, np.array):
-            diff = np.linalg.norm(pos - self.connection.player.position)
-            if diff > 100:
-                raise IllegalData("You moved too quickly!")
+        pos = mc_vec3f.get_default()
+        pos.x = mc_double.read(self)
+        pos.y = mc_double.read(self)
+        pos.z = mc_double.read(self)
 
-        self.player.entity.position = mc_vec3f(pos)
+        prev = self.player.entity.position
+        diff = (prev.x - pos.x)**2 + (prev.y - pos.y)**2 + (prev.z - pos.z)**2
+        if diff > 100**2:
+            print("{} moved too quickly!".format(self.player.username))
+            OutgoingPlayerPositionLook(self.connection, prev).send()
+
+        self.player.entity.position = pos
         self.player.entity.on_ground = mc_bool.read(self)
 
-class PlayerLookUpdate(IncomingPacket):
+class IncomingPlayerLook(IncomingPacket):
 
     packet_id = 0x0E
     def recv(self):
@@ -400,14 +422,16 @@ class IncomingPlayerPositionLook(IncomingPacket):
 
     packet_id = 0x0D
     def recv(self):
-        pos = np.array([0.0, 0.0, 0.0])
-        pos[0] = mc_double.read(self)
-        pos[1] = mc_double.read(self)
-        pos[2] = mc_double.read(self)
-        if isinstance(self.player.entity.position, np.ndarray):
-            diff = np.linalg.norm(pos - self.connection.player.position)
-            if diff > 100:
-                raise IllegalData("You moved too quickly!")
+        pos = mc_vec3f.get_default()
+        pos.x = mc_double.read(self)
+        pos.y = mc_double.read(self)
+        pos.z = mc_double.read(self)
+
+        prev = self.player.entity.position
+        diff = (prev.x - pos.x)**2 + (prev.y - pos.y)**2 + (prev.z - pos.z)**2
+        if diff > 100**2:
+            print("{} moved too quickly!".format(self.player.username))
+            OutgoingPlayerPositionLook(self.connection, prev).send()
 
         self.player.entity.position = pos
         self.player.entity.yaw = mc_float.read(self)
@@ -515,10 +539,9 @@ class ChunkData(OutgoingPacket):
         for entity in self.chunk.tile_entities:
             entities += nbt_to_bytes(entity.to_nbt())
 
-        # hacky workaround (vanilla client complains of 1 byte extra, commenting this out
-        # makes it work)
-        #payload += mc_varint(len(self.chunk.tile_entities)).bytes()
-        #payload += entities
+        # current protocol (1.11) sends this, target protocol for now (1.9) doesn't
+        # payload += mc_varint(len(self.chunk.tile_entities)).bytes()
+        # payload += entities
         self._send(payload)
 
 
@@ -535,10 +558,10 @@ IncomingPacket.PLAY_PACKET_MAP = {
     0x09: IncomingPluginMessage,
     # 0x0A: UseEntity,
     0x0B: IncomingKeepAlive,
-    # 0x0C: IncomingPlayerPosition,
+    0x0C: IncomingPlayerPosition,
     0x0D: IncomingPlayerPositionLook,
-    # 0x0E: IncomingPlayerLook,
-    # 0x0F: PlayerOnGround,
+    0x0E: IncomingPlayerLook,
+    0x0F: BasicPlayerUpdate,
     # 0x10: IncomingVehicleMove,
     # 0x11: SteerBoat,
     # 0x12: IncomingPlayerAbilities,

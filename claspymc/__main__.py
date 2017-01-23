@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
     "port": 25565,
     "ipv6": True,
     "online": False,
-    "compression": 2,
+    "compression": 256,
     "difficulty": 1,
     "world": "/home/thomas/Documents/mc/1.9/world",
     "keepalive": {

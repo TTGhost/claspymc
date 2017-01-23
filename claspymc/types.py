@@ -311,7 +311,7 @@ class mc_pos(mc_nettype, list):
 class mc_vec3f(mc_nettype, mc_nbttype, list):
 
     nbt_type = nbt.TAG_List
-    _default = (0, 0, 0)
+    _default = (0.0, 0.0, 0.0)
 
     @property
     def x(self): return self[0]

@@ -1,6 +1,6 @@
 __author__ = 'Thomas Bell'
 
-__version__ = (0, 3, 0)
+__version__ = (0, 3, 1)
 __version_info__ = ".".join(map(str, __version__))
 
 APP_NAME = "claspymc"
